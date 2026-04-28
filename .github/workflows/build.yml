@@ -40,18 +40,29 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Download bundled Node binaries
+      - name: Download bundled Node + npm completo
         run: |
           mkdir -p bundled-node
+
+          # ── arm64 ──────────────────────────────────────────────
           curl -L https://nodejs.org/dist/v20.19.1/node-v20.19.1-darwin-arm64.tar.gz -o /tmp/node-arm64.tar.gz
           tar -xzf /tmp/node-arm64.tar.gz -C /tmp
           cp /tmp/node-v20.19.1-darwin-arm64/bin/node bundled-node/node-arm64
-          cp /tmp/node-v20.19.1-darwin-arm64/bin/npm bundled-node/npm
-          cp -r /tmp/node-v20.19.1-darwin-arm64/lib/node_modules bundled-node/node_modules_npm
+          chmod +x bundled-node/node-arm64
+
+          # ── x64 ────────────────────────────────────────────────
           curl -L https://nodejs.org/dist/v20.19.1/node-v20.19.1-darwin-x64.tar.gz -o /tmp/node-x64.tar.gz
           tar -xzf /tmp/node-x64.tar.gz -C /tmp
           cp /tmp/node-v20.19.1-darwin-x64/bin/node bundled-node/node-x64
-          chmod +x bundled-node/node-arm64 bundled-node/node-x64 bundled-node/npm
+          chmod +x bundled-node/node-x64
+
+          # ── npm completo (da arm64, è puro JS quindi uguale per entrambe le arch) ──
+          cp -r /tmp/node-v20.19.1-darwin-arm64/lib/node_modules/npm bundled-node/npm_modules
+
+          echo "bundled-node contents:"
+          ls -la bundled-node/
+          echo "npm_modules bin:"
+          ls bundled-node/npm_modules/bin/
 
       - name: Setup bundled-mcp
         run: |
