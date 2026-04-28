@@ -549,13 +549,20 @@ async function step3_claude() {
   sendLog('Installazione Claude Code in corso...');
 
   if (IS_MAC) {
-    // Usa il node bundled per installare claude code
+    // Assicura che il node bundled sia nel PATH prima di chiamare npm
     const bundledNode = getBundledNode();
     const bundledDir = path.dirname(bundledNode);
-    // npm script dentro node bundled
-    const npmScript = path.join(bundledDir, 'npm');
-    const env = { ...process.env, PATH: bundledDir + ':' + process.env.PATH };
-    await run(bundledNode, [npmScript, 'install', '-g', '@anthropic-ai/claude-code'], { cwd: HOME, env });
+    fs.chmodSync(bundledNode, 0o755);
+    // Aggiorna process.env.PATH in modo che run() lo usi
+    if (!process.env.PATH.includes(bundledDir)) {
+      process.env.PATH = bundledDir + ':' + process.env.PATH;
+    }
+    // Crea symlink node -> node-arm64/node-x64 se non esiste
+    const nodeSymlink = path.join(bundledDir, 'node');
+    if (!fs.existsSync(nodeSymlink)) {
+      try { fs.symlinkSync(bundledNode, nodeSymlink); } catch(_) {}
+    }
+    await run('npm', ['install', '-g', '@anthropic-ai/claude-code'], { cwd: HOME });
   } else {
     await run('npm', ['install', '-g', '@anthropic-ai/claude-code'], { cwd: HOME });
   }
