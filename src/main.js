@@ -589,26 +589,31 @@ async function step4_mcp() {
   // Percorso dei file MCP bundled dentro l'app Electron
   // In produzione: process.resourcesPath/bundled-mcp
   // In sviluppo: cartella progetto/bundled-mcp
-  const bundledMcp = app.isPackaged
+  let bundledMcp = app.isPackaged
     ? path.join(process.resourcesPath, 'bundled-mcp')
     : path.join(__dirname, '..', 'bundled-mcp');
 
-  // ===== DEBUG LOGS =====
-  sendLog('DBG resourcesPath: ' + process.resourcesPath);
-  sendLog('DBG bundledMcp: ' + bundledMcp);
-  sendLog('DBG isPackaged: ' + app.isPackaged);
-  sendLog('DBG __dirname: ' + __dirname);
+  // Risolvi eventuali symlink (es. quando l'app gira da DMG montato)
   try {
-    const parentDir = path.dirname(bundledMcp);
-    sendLog('DBG parent exists: ' + fs.existsSync(parentDir));
-    if (fs.existsSync(parentDir)) {
-      sendLog('DBG parent contents: ' + fs.readdirSync(parentDir).join(', '));
+    if (fs.existsSync(bundledMcp)) {
+      bundledMcp = fs.realpathSync(bundledMcp);
     }
-  } catch(e) { sendLog('DBG err: ' + e.message); }
-  // ===== END DEBUG =====
+  } catch (e) { /* ignore */ }
 
   if (!fs.existsSync(bundledMcp)) {
-    throw new Error('File MCP bundled non trovati. Path cercato: ' + bundledMcp);
+    // Errore dettagliato che mostra il path effettivamente cercato
+    const parent = path.dirname(bundledMcp);
+    let dirContents = '';
+    try {
+      if (fs.existsSync(parent)) {
+        dirContents = '\nContenuto cartella: ' + fs.readdirSync(parent).join(', ');
+      }
+    } catch (e) { /* ignore */ }
+    throw new Error(
+      'File MCP bundled non trovati. Path cercato: ' + bundledMcp +
+      dirContents +
+      '\nSe il problema persiste, sposta l\'app in /Applications e riapri.'
+    );
   }
 
   const hasPkg = fs.existsSync(path.join(dest, 'package.json'));
