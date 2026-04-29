@@ -118,9 +118,9 @@ function run(cmd, args = [], opts = {}) {
   const { ignoreError = false, cwd, ...spawnOpts } = opts;
   return new Promise((resolve, reject) => {
     const env = { ...process.env, ...buildWinPath() };
-    // shell:false = Node passa args direttamente al processo, spazi nei path non sono un problema
+    // shell:false su Mac (gestisce spazi nei path), shell:true su Windows (richiesto da winget/cmd)
     const proc = spawn(cmd, args, {
-      shell: false,
+      shell: process.platform === 'win32',
       env,
       cwd: cwd || HOME,
       ...spawnOpts,
@@ -218,9 +218,12 @@ async function findClaude() {
 
   const winPaths = [
     ...prefixPaths,
-    process.env.APPDATA    ? `${process.env.APPDATA}\\npm\\claude.cmd`         : null,
-    process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\npm\\claude.cmd`   : null,
-    process.env.ProgramFiles  ? `${process.env.ProgramFiles}\\nodejs\\claude.cmd` : null,
+    process.env.APPDATA       ? `${process.env.APPDATA}\npm\claude.cmd`              : null,
+    process.env.APPDATA       ? `${process.env.APPDATA}\npm\claude`                  : null,
+    process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm\claude.cmd`         : null,
+    process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm\claude`             : null,
+    process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs\claude.cmd`      : null,
+    process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs\npm\claude.cmd` : null,
   ].filter(Boolean);
 
   for (const p of winPaths) if (fs.existsSync(p)) return p;
@@ -604,11 +607,38 @@ async function step3_claude() {
     });
 
   } else {
-    await run('npm', ['install', '-g', '@anthropic-ai/claude-code'], { cwd: HOME });
+    // Windows: cerca npm in tutti i path standard
+    const winNpmCandidates = [
+      process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs\npm.cmd`  : null,
+      process.env.APPDATA       ? `${process.env.APPDATA}\npm\npm.cmd`           : null,
+      process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm\npm.cmd`      : null,
+      'npm', // fallback generico
+    ].filter(Boolean);
+
+    let winNpm = 'npm';
+    for (const p of winNpmCandidates) {
+      if (p === 'npm') { winNpm = 'npm'; break; }
+      if (fs.existsSync(p)) { winNpm = p; break; }
+    }
+
+    const winEnv = {
+      ...process.env,
+      PATH: [
+        process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs`  : '',
+        process.env.APPDATA       ? `${process.env.APPDATA}\npm`           : '',
+        process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm`      : '',
+        process.env.PATH || '',
+      ].filter(Boolean).join(';')
+    };
+
+    await run(winNpm, ['install', '-g', '@anthropic-ai/claude-code'], {
+      cwd: HOME,
+      env: winEnv
+    });
   }
 
   await refreshWinPath();
-  await new Promise(r => setTimeout(r, 2000));
+  await new Promise(r => setTimeout(r, 3000));
   claudePath = await findClaude();
 
   if (!claudePath) {
@@ -745,8 +775,9 @@ async function step6_mcp(claudePath, mcpDir) {
 
   sendLog(`Entry point MCP: ${path.basename(indexPath)}`);
 
+  // Su Windows shell:true quindi le virgolette non vanno aggiunte manualmente
   await run(
-    IS_WIN ? `"${claudePath}"` : claudePath,
+    claudePath,
     ['mcp', 'add', 'tradingview', '--', 'node', indexPath],
     { cwd: HOME, ignoreError: true }
   );
