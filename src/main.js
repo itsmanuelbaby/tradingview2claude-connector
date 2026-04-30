@@ -233,78 +233,51 @@ async function findClaude() {
 // ── TROVA TRADINGVIEW ────────────────────────────────────────
 async function findTradingView() {
   if (IS_WIN) {
-    // 1. Registro Windows (installazioni standard)
-    const regPaths = [];
-    for (const hive of ['HKCU', 'HKLM']) {
-      for (const regPath of [
-        `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall`,
-        `${hive}\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall`,
-      ]) {
-        const out = await runQ(`reg query "${regPath}" /s /f "TradingView" 2>nul`);
-        if (out) {
-          const m = out.match(/InstallLocation\s+REG_SZ\s+(.+)/);
-          if (m && m[1].trim()) {
-            regPaths.push(m[1].trim() + '\\TradingView.exe');
-          }
-        }
-      }
-    }
-    for (const p of regPaths) {
-      if (p && fs.existsSync(p)) return p;
-    }
+    // Su Windows usiamo Chrome o Edge con CDP invece di TradingView.exe
+    // Questo bypassa completamente il problema MSIX/Store/permessi Admin
 
-    // 2. Path statici comuni (inclusi path nascosti comuni)
-    const fallbacks = [
-      process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\TradingView\\TradingView.exe` : null,
-      process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\TradingView\\TradingView.exe` : null,
-      process.env.APPDATA      ? `${process.env.APPDATA}\\TradingView\\TradingView.exe` : null,
-      process.env.APPDATA      ? `${process.env.APPDATA}\\Programs\\TradingView\\TradingView.exe` : null,
-      process.env.ProgramFiles ? `${process.env.ProgramFiles}\\TradingView\\TradingView.exe` : null,
-      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\\TradingView\\TradingView.exe` : null,
-      process.env.USERPROFILE  ? `${process.env.USERPROFILE}\\AppData\\Local\\Programs\\TradingView\\TradingView.exe` : null,
-      process.env.USERPROFILE  ? `${process.env.USERPROFILE}\\AppData\\Roaming\\TradingView\\TradingView.exe` : null,
-      process.env.USERPROFILE  ? `${process.env.USERPROFILE}\\AppData\\Local\\TradingView\\TradingView.exe` : null,
+    // 1. Cerca Google Chrome
+    const chromePaths = [
+      process.env.ProgramFiles       ? `${process.env.ProgramFiles}\Google\Chrome\Application\chrome.exe`        : null,
+      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\Google\Chrome\Application\chrome.exe` : null,
+      process.env.LOCALAPPDATA       ? `${process.env.LOCALAPPDATA}\Google\Chrome\Application\chrome.exe`        : null,
     ].filter(Boolean);
 
-    for (const p of fallbacks) {
+    for (const p of chromePaths) {
       if (p && fs.existsSync(p)) return p;
     }
 
-    // 3. Microsoft Store — usa Get-AppxPackage (istantaneo, non richiede accesso a WindowsApps)
-    try {
-      const storeScript = 'Get-AppxPackage -Name *TradingView* | Select-Object -ExpandProperty InstallLocation -ErrorAction SilentlyContinue | Select-Object -First 1';
-      const storeFound = await runQ(`powershell -nologo -noprofile -command "${storeScript}"`, 10000);
-      if (storeFound && storeFound.trim()) {
-        // Le app Store non hanno TradingView.exe diretto — cercalo nella cartella
-        const storeDir = storeFound.trim();
-        const storeExe = storeDir + '\\TradingView.exe';
-        if (fs.existsSync(storeExe)) return storeExe;
-        // A volte è in una sottocartella
-        try {
-          const files = fs.readdirSync(storeDir);
-          const exe = files.find(f => f.toLowerCase() === 'tradingview.exe');
-          if (exe) return storeDir + '\\' + exe;
-        } catch(_) {}
-        // Restituiamo la cartella — il launcher usa 'start' che gestisce le app Store
-        return storeDir;
-      }
-    } catch(_) {}
+    // 2. Cerca Microsoft Edge (installato su tutti i Windows 10/11)
+    const edgePaths = [
+      process.env.ProgramFiles         ? `${process.env.ProgramFiles}\Microsoft\Edge\Application\msedge.exe`         : null,
+      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\Microsoft\Edge\Application\msedge.exe` : null,
+      process.env.LOCALAPPDATA         ? `${process.env.LOCALAPPDATA}\Microsoft\Edge\Application\msedge.exe`         : null,
+      'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+      'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    ].filter(Boolean);
 
-    // 4. Ricerca PowerShell completa su tutto il disco inclusi file e cartelle nascosti
-    sendLog('Ricerca TradingView su tutto il PC (potrebbe richiedere qualche secondo)...');
-    try {
-      const psScript = 'Get-ChildItem -Path C:\\ -Recurse -Force -Filter TradingView.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName';
-      const psCmd = `powershell -nologo -noprofile -command "${psScript}"`;
-      const found = await runQ(psCmd, 30000);
-      if (found && found.trim()) {
-        return found.trim();
-      }
-    } catch(_) {}
+    for (const p of edgePaths) {
+      if (p && fs.existsSync(p)) return p;
+    }
+
+    // 3. Cerca tramite registro (Chrome o Edge)
+    for (const key of [
+      'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe',
+      'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe',
+    ]) {
+      try {
+        const out = await runQ(`reg query "${key}" /ve 2>nul`);
+        if (out) {
+          const m = out.match(/REG_SZ\s+(.+\.exe)/i);
+          if (m && m[1].trim() && fs.existsSync(m[1].trim())) return m[1].trim();
+        }
+      } catch(_) {}
+    }
 
     return null;
   }
 
-  // Mac
+  // Mac — usa TradingView.app nativa (su Mac non c'è problema MSIX)
   const macPaths = [
     '/Applications/TradingView.app',
     `${HOME}/Applications/TradingView.app`,
@@ -756,6 +729,11 @@ async function step4_mcp() {
 
 // Step 5 — Trova TradingView
 async function step5_findtv() {
+  if (IS_WIN) {
+    sendLog('Ricerca browser (Chrome/Edge) per TradingView...');
+  } else {
+    sendLog('Ricerca TradingView...');
+  }
   const p = await findTradingView();
   if (p) sendLog(`TradingView trovato: ${p}`);
   else sendLog('TradingView non trovato — verrà usato il percorso di default');
@@ -836,6 +814,7 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
 
   if (IS_WIN) {
     const claudeExe = `"${claudePath}"`;
+    const browserExe = tvPath || '';
 
     const lines = [
       '@echo off',
@@ -843,8 +822,7 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
       'title TradingView2Claude Connector',
       'cls',
       '',
-      ':: Aggiunge percorsi npm e nodejs al PATH con path assoluti',
-      'set "PATH=%ProgramFiles%\nodejs;%LOCALAPPDATA%\Programs\nodejs;%APPDATA%\npm;%LOCALAPPDATA%\npm;%ProgramFiles%\Git\cmd;%SystemRoot%\System32;%SystemRoot%;%PATH%"',
+      'set "PATH=%ProgramFiles%\\nodejs;%LOCALAPPDATA%\\Programs\\nodejs;%APPDATA%\\npm;%LOCALAPPDATA%\\npm;%SystemRoot%\\System32;%SystemRoot%;%PATH%"',
       '',
       'echo.',
       'echo  +==============================================+',
@@ -852,95 +830,61 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
       'echo  +==============================================+',
       'echo.',
       '',
-      ':: Cerca TradingView.exe in tutti i percorsi possibili (inclusi file nascosti)',
-      'set "TV_EXE="',
-      // Percorso fornito dall'installer se trovato
-      ...(tvPath ? [
-        `if exist "${tvPath}" set "TV_EXE=${tvPath}"`,
-      ] : []),
-      // Ricerca dinamica in tutti i percorsi standard
-      'if not defined TV_EXE if exist "%LOCALAPPDATA%\Programs\TradingView\TradingView.exe" set "TV_EXE=%LOCALAPPDATA%\Programs\TradingView\TradingView.exe"',
-      'if not defined TV_EXE if exist "%APPDATA%\TradingView\TradingView.exe" set "TV_EXE=%APPDATA%\TradingView\TradingView.exe"',
-      'if not defined TV_EXE if exist "%ProgramFiles%\TradingView\TradingView.exe" set "TV_EXE=%ProgramFiles%\TradingView\TradingView.exe"',
-      'if not defined TV_EXE if exist "%ProgramFiles(x86)%\TradingView\TradingView.exe" set "TV_EXE=%ProgramFiles(x86)%\TradingView\TradingView.exe"',
-      'if not defined TV_EXE if exist "%LOCALAPPDATA%\TradingView\TradingView.exe" set "TV_EXE=%LOCALAPPDATA%\TradingView\TradingView.exe"',
-      'if not defined TV_EXE if exist "%APPDATA%\Programs\TradingView\TradingView.exe" set "TV_EXE=%APPDATA%\Programs\TradingView\TradingView.exe"',
-      'if not defined TV_EXE if exist "%USERPROFILE%\AppData\Local\TradingView\TradingView.exe" set "TV_EXE=%USERPROFILE%\AppData\Local\TradingView\TradingView.exe"',
-      ':: Microsoft Store — ricerca rapida tramite Get-AppxPackage',
-      'if not defined TV_EXE (',
-      '  for /f "usebackq delims=" %%a in (`powershell -nologo -noprofile -command "Get-AppxPackage -Name *TradingView* -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InstallLocation | Select-Object -First 1" 2^>nul`) do set "TV_STORE=%%a"',
-      '  if defined TV_STORE (',
-      '    if exist "%TV_STORE%\TradingView.exe" set "TV_EXE=%TV_STORE%\TradingView.exe"',
-      '    if not defined TV_EXE set "TV_EXE=%TV_STORE%"',
-      '  )',
-      ')',
-      ':: Ricerca PowerShell completa su tutto il PC inclusi file nascosti',
-      'if not defined TV_EXE (',
-      '  echo  Ricerca TradingView su tutto il PC...',
-      '  for /f "usebackq delims=" %%a in (`powershell -nologo -noprofile -command "Get-ChildItem -Path C:\ -Recurse -Force -Filter TradingView.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName" 2^>nul`) do set "TV_EXE=%%a"',
-      ')',
-      // Ricerca nel registro tramite PowerShell come ultimo fallback
-      'if not defined TV_EXE (',
-      '  for /f "usebackq tokens=*" %%a in (`powershell -nologo -noprofile -command "try{(Get-ItemProperty -Path HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Where-Object DisplayName -like *TradingView*).InstallLocation}catch{}" 2^>nul`) do (',
-      '    if exist "%%a\\TradingView.exe" set "TV_EXE=%%a\\TradingView.exe"',
-      '  )',
-      ')',
+      'set "BROWSER_EXE="',
+      ...(browserExe ? [`if exist "${browserExe}" set "BROWSER_EXE=${browserExe}"`] : []),
+      'if not defined BROWSER_EXE if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" set "BROWSER_EXE=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"',
+      'if not defined BROWSER_EXE if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" set "BROWSER_EXE=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"',
+      'if not defined BROWSER_EXE if exist "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe" set "BROWSER_EXE=%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"',
+      'if not defined BROWSER_EXE if exist "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe"',
+      'if not defined BROWSER_EXE if exist "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe"',
+      'if not defined BROWSER_EXE if exist "%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe"',
+      'if not defined BROWSER_EXE if exist "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"',
       '',
-      'if not defined TV_EXE (',
-      '  echo  X TradingView non trovato sul PC.',
-      '  echo    Installa TradingView Desktop da https://www.tradingview.com/desktop/',
+      'if not defined BROWSER_EXE (',
+      '  echo  X Chrome o Edge non trovato.',
+      '  echo    Installa Chrome da https://www.google.com/chrome/',
       '  pause',
       '  exit /b 1',
       ')',
       '',
-      ':: FIX 1: Chiudi TradingView E il server MCP node precedente',
-      'taskkill /f /im TradingView.exe >nul 2>&1',
       'taskkill /f /im node.exe >nul 2>&1',
-      'timeout /t 3 /nobreak >nul',
-      '',
-      ':: FIX 3: Verifica che porta 9222 sia libera',
-      'netstat -ano | findstr ":9222 " >nul 2>&1 && (',
-      '  echo  Porta 9222 occupata, attendo liberazione...',
-      '  timeout /t 3 /nobreak >nul',
+      '%SystemRoot%\\System32\\netstat.exe -ano | findstr ":9222 " >nul 2>&1 && (',
+      '  for /f "tokens=5" %%p in (\'%SystemRoot%\\System32\\netstat.exe -ano ^| findstr ":9222 "\') do taskkill /f /pid %%p >nul 2>&1',
+      '  timeout /t 2 /nobreak >nul',
       ')',
       '',
-      'echo  [1/3] Apertura TradingView con porta debug...',
-      ':: Lancia TradingView come utente normale anche se il bat gira da Admin',
-      ':: Metodo 1: schtasks (universale, funziona su tutti i Windows 10/11)',
-      'schtasks /create /tn "TV2Claude_Launch" /tr "\"%TV_EXE%\" --remote-debugging-port=9222" /sc once /st 00:00 /ru "%USERNAME%" /f >nul 2>&1',
-      'schtasks /run /tn "TV2Claude_Launch" >nul 2>&1',
-      'schtasks /delete /tn "TV2Claude_Launch" /f >nul 2>&1',
-      ':: Metodo 2 fallback: explorer.exe come processo non-admin',
-      'if errorlevel 1 explorer.exe "%TV_EXE%" --remote-debugging-port=9222',
+      'set "CDP_PROFILE=%USERPROFILE%\\tv2claude-browser-profile"',
+      'if not exist "%CDP_PROFILE%" mkdir "%CDP_PROFILE%"',
       '',
-      ':: Aspetta CDP pronto (max 40 sec)',
-      'echo  Attendo che TradingView sia pronto...',
+      'echo  [1/3] Apertura TradingView nel browser con porta debug...',
+      'start "" "%BROWSER_EXE%" --remote-debugging-port=9222 --user-data-dir="%CDP_PROFILE%" --app=https://www.tradingview.com --window-size=1400,900 --no-first-run --no-default-browser-check',
+      '',
+      'echo  Attendo che il browser sia pronto...',
       'set CDP_READY=0',
       'set RETRY=0',
       ':WAIT_CDP',
       'timeout /t 2 /nobreak >nul',
-      '%SystemRoot%\System32\curl.exe -s http://localhost:9222/json/version >nul 2>&1 && set CDP_READY=1',
+      '%SystemRoot%\\System32\\curl.exe -s http://localhost:9222/json/version >nul 2>&1 && set CDP_READY=1',
       'if "%CDP_READY%"=="1" goto CDP_OK',
       'set /a RETRY+=1',
-      'if %RETRY% lss 20 goto WAIT_CDP',
-      'echo  ATTENZIONE: TradingView lento, procedo comunque...',
+      'if %RETRY% lss 15 goto WAIT_CDP',
+      'echo  ATTENZIONE: Browser lento, procedo comunque...',
       ':CDP_OK',
-      'echo  [OK] TradingView pronto sulla porta 9222',
+      'echo  [OK] Browser pronto su porta 9222',
       '',
-      ':: Avvia server MCP in background PRIMA di Claude Code',
-      'echo  [2/3] Avvio server MCP TradingView...',
-      ':: Usa path assoluto node con percorsi standard Windows',
       'set "NODE_EXE="',
-      'if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"',
-      'if not defined NODE_EXE if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE_EXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"',
+      'if exist "%ProgramFiles%\\nodejs\\node.exe" set "NODE_EXE=%ProgramFiles%\\nodejs\\node.exe"',
+      'if not defined NODE_EXE if exist "%LOCALAPPDATA%\\Programs\\nodejs\\node.exe" set "NODE_EXE=%LOCALAPPDATA%\\Programs\\nodejs\\node.exe"',
       'if not defined NODE_EXE set "NODE_EXE=node"',
+      '',
+      'echo  [2/3] Avvio server MCP TradingView...',
       'start /b "" "%NODE_EXE%" "' + mcpDir + '" >nul 2>&1',
       'timeout /t 2 /nobreak >nul',
       'echo  [OK] Server MCP avviato',
       '',
       'echo  [3/3] Avvio Claude Code...',
       'echo.',
-      'echo  Digita il tuo prompt di analisi e premi INVIO',
+      'echo  TradingView aperto nel browser — inizia ad analizzare i grafici',
       'echo  Esempio: Analizza il grafico attuale, dimmi supporti e resistenze',
       'echo.',
       `cd /d "${mcpDir}"`,
