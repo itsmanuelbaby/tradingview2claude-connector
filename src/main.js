@@ -233,9 +233,8 @@ async function findClaude() {
 // ── TROVA TRADINGVIEW ────────────────────────────────────────
 async function findTradingView() {
   if (IS_WIN) {
+    // 1. Registro Windows (installazioni standard)
     const regPaths = [];
-
-    // Cerca nel registro (metodo più affidabile)
     for (const hive of ['HKCU', 'HKLM']) {
       for (const regPath of [
         `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall`,
@@ -250,16 +249,58 @@ async function findTradingView() {
         }
       }
     }
-
-    const fallbacks = [
-      process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\TradingView\\TradingView.exe` : null,
-      process.env.ProgramFiles  ? `${process.env.ProgramFiles}\\TradingView\\TradingView.exe`           : null,
-      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\\TradingView\\TradingView.exe` : null,
-    ].filter(Boolean);
-
-    for (const p of [...regPaths, ...fallbacks]) {
+    for (const p of regPaths) {
       if (p && fs.existsSync(p)) return p;
     }
+
+    // 2. Path statici comuni (inclusi path nascosti comuni)
+    const fallbacks = [
+      process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\TradingView\\TradingView.exe` : null,
+      process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\TradingView\\TradingView.exe` : null,
+      process.env.APPDATA      ? `${process.env.APPDATA}\\TradingView\\TradingView.exe` : null,
+      process.env.APPDATA      ? `${process.env.APPDATA}\\Programs\\TradingView\\TradingView.exe` : null,
+      process.env.ProgramFiles ? `${process.env.ProgramFiles}\\TradingView\\TradingView.exe` : null,
+      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\\TradingView\\TradingView.exe` : null,
+      process.env.USERPROFILE  ? `${process.env.USERPROFILE}\\AppData\\Local\\Programs\\TradingView\\TradingView.exe` : null,
+      process.env.USERPROFILE  ? `${process.env.USERPROFILE}\\AppData\\Roaming\\TradingView\\TradingView.exe` : null,
+      process.env.USERPROFILE  ? `${process.env.USERPROFILE}\\AppData\\Local\\TradingView\\TradingView.exe` : null,
+    ].filter(Boolean);
+
+    for (const p of fallbacks) {
+      if (p && fs.existsSync(p)) return p;
+    }
+
+    // 3. Microsoft Store — usa Get-AppxPackage (istantaneo, non richiede accesso a WindowsApps)
+    try {
+      const storeScript = 'Get-AppxPackage -Name *TradingView* | Select-Object -ExpandProperty InstallLocation -ErrorAction SilentlyContinue | Select-Object -First 1';
+      const storeFound = await runQ(`powershell -nologo -noprofile -command "${storeScript}"`, 10000);
+      if (storeFound && storeFound.trim()) {
+        // Le app Store non hanno TradingView.exe diretto — cercalo nella cartella
+        const storeDir = storeFound.trim();
+        const storeExe = storeDir + '\\TradingView.exe';
+        if (fs.existsSync(storeExe)) return storeExe;
+        // A volte è in una sottocartella
+        try {
+          const files = fs.readdirSync(storeDir);
+          const exe = files.find(f => f.toLowerCase() === 'tradingview.exe');
+          if (exe) return storeDir + '\\' + exe;
+        } catch(_) {}
+        // Restituiamo la cartella — il launcher usa 'start' che gestisce le app Store
+        return storeDir;
+      }
+    } catch(_) {}
+
+    // 4. Ricerca PowerShell completa su tutto il disco inclusi file e cartelle nascosti
+    sendLog('Ricerca TradingView su tutto il PC (potrebbe richiedere qualche secondo)...');
+    try {
+      const psScript = 'Get-ChildItem -Path C:\\ -Recurse -Force -Filter TradingView.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName';
+      const psCmd = `powershell -nologo -noprofile -command "${psScript}"`;
+      const found = await runQ(psCmd, 30000);
+      if (found && found.trim()) {
+        return found.trim();
+      }
+    } catch(_) {}
+
     return null;
   }
 
@@ -794,22 +835,16 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
   }
 
   if (IS_WIN) {
-    // Usa variabili bat native per PATH (non hardcodare percorsi)
-    // Usa il percorso claude reale trovato durante installazione
-    const tvExe = tvPath
-      ? `"${tvPath}"`
-      : `"%LOCALAPPDATA%\\Programs\\TradingView\\TradingView.exe"`;
-
     const claudeExe = `"${claudePath}"`;
 
     const lines = [
       '@echo off',
-      'setlocal',
+      'setlocal enabledelayedexpansion',
       'title TradingView2Claude Connector',
       'cls',
       '',
       ':: Aggiunge percorsi npm e nodejs al PATH',
-      'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%LOCALAPPDATA%\\npm;%ProgramFiles%\\Git\\cmd;%PATH%"',
+      'set "PATH=%ProgramFiles%\nodejs;%APPDATA%\npm;%LOCALAPPDATA%\npm;%ProgramFiles%\Git\cmd;%PATH%"',
       '',
       'echo.',
       'echo  +==============================================+',
@@ -817,12 +852,53 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
       'echo  +==============================================+',
       'echo.',
       '',
+      ':: Cerca TradingView.exe in tutti i percorsi possibili (inclusi file nascosti)',
+      'set "TV_EXE="',
+      // Percorso fornito dall'installer se trovato
+      ...(tvPath ? [
+        `if exist "${tvPath}" set "TV_EXE=${tvPath}"`,
+      ] : []),
+      // Ricerca dinamica in tutti i percorsi standard
+      'if not defined TV_EXE if exist "%LOCALAPPDATA%\Programs\TradingView\TradingView.exe" set "TV_EXE=%LOCALAPPDATA%\Programs\TradingView\TradingView.exe"',
+      'if not defined TV_EXE if exist "%APPDATA%\TradingView\TradingView.exe" set "TV_EXE=%APPDATA%\TradingView\TradingView.exe"',
+      'if not defined TV_EXE if exist "%ProgramFiles%\TradingView\TradingView.exe" set "TV_EXE=%ProgramFiles%\TradingView\TradingView.exe"',
+      'if not defined TV_EXE if exist "%ProgramFiles(x86)%\TradingView\TradingView.exe" set "TV_EXE=%ProgramFiles(x86)%\TradingView\TradingView.exe"',
+      'if not defined TV_EXE if exist "%LOCALAPPDATA%\TradingView\TradingView.exe" set "TV_EXE=%LOCALAPPDATA%\TradingView\TradingView.exe"',
+      'if not defined TV_EXE if exist "%APPDATA%\Programs\TradingView\TradingView.exe" set "TV_EXE=%APPDATA%\Programs\TradingView\TradingView.exe"',
+      'if not defined TV_EXE if exist "%USERPROFILE%\AppData\Local\TradingView\TradingView.exe" set "TV_EXE=%USERPROFILE%\AppData\Local\TradingView\TradingView.exe"',
+      ':: Microsoft Store — ricerca rapida tramite Get-AppxPackage',
+      'if not defined TV_EXE (',
+      '  for /f "usebackq delims=" %%a in (`powershell -nologo -noprofile -command "Get-AppxPackage -Name *TradingView* -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InstallLocation | Select-Object -First 1" 2^>nul`) do set "TV_STORE=%%a"',
+      '  if defined TV_STORE (',
+      '    if exist "%TV_STORE%\TradingView.exe" set "TV_EXE=%TV_STORE%\TradingView.exe"',
+      '    if not defined TV_EXE set "TV_EXE=%TV_STORE%"',
+      '  )',
+      ')',
+      ':: Ricerca PowerShell completa su tutto il PC inclusi file nascosti',
+      'if not defined TV_EXE (',
+      '  echo  Ricerca TradingView su tutto il PC...',
+      '  for /f "usebackq delims=" %%a in (`powershell -nologo -noprofile -command "Get-ChildItem -Path C:\ -Recurse -Force -Filter TradingView.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName" 2^>nul`) do set "TV_EXE=%%a"',
+      ')',
+      // Ricerca nel registro tramite PowerShell come ultimo fallback
+      'if not defined TV_EXE (',
+      '  for /f "usebackq tokens=*" %%a in (`powershell -nologo -noprofile -command "try{(Get-ItemProperty -Path HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Where-Object DisplayName -like *TradingView*).InstallLocation}catch{}" 2^>nul`) do (',
+      '    if exist "%%a\\TradingView.exe" set "TV_EXE=%%a\\TradingView.exe"',
+      '  )',
+      ')',
+      '',
+      'if not defined TV_EXE (',
+      '  echo  X TradingView non trovato sul PC.',
+      '  echo    Installa TradingView Desktop da https://www.tradingview.com/desktop/',
+      '  pause',
+      '  exit /b 1',
+      ')',
+      '',
       'echo  [1/3] Chiusura TradingView...',
       'taskkill /f /im TradingView.exe >nul 2>&1',
       'timeout /t 2 /nobreak >nul',
       '',
       'echo  [2/3] Apertura TradingView con porta debug...',
-      `start "" ${tvExe} --remote-debugging-port=9222`,
+      'start "" "%TV_EXE%" --remote-debugging-port=9222',
       'timeout /t 5 /nobreak >nul',
       'echo  [OK] TradingView avviato',
       '',
