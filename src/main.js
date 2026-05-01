@@ -532,25 +532,86 @@ async function step1_nodejs() {
     return;
   }
 
-  // Windows: verifica o installa tramite winget
+  // Windows: verifica o installa Node.js
   const v = await runQ('node --version');
   if (v) { sendLog(`Node.js ${v} già installato`); return; }
 
-  sendLog('Installazione Node.js LTS in corso...');
+  // METODO 1: winget con --source winget (forza origine winget, evita msstore)
+  sendLog('Installazione Node.js LTS via winget...');
   await run('winget', [
     'install', '--id', 'OpenJS.NodeJS.LTS',
+    '--source', 'winget',
     '--silent', '--accept-package-agreements', '--accept-source-agreements',
   ], { ignoreError: true });
   await refreshWinPath();
 
-  const v2 = await runQ('node --version');
-  if (!v2) {
-    throw new Error(
-      'Node.js non trovato dopo installazione.\n' +
-      'Soluzione: riavvia il PC e riesegui l\'installer.'
-    );
+  let v2 = await runQ('node --version');
+  if (v2) { sendLog(`Node.js ${v2} installato (winget)`); return; }
+
+  // METODO 2: download diretto MSI da nodejs.org (universale, funziona sempre)
+  sendLog('winget fallito, scarico Node.js da nodejs.org...');
+  try {
+    const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
+    const msiPath = path.join(tmpDir, 'nodejs-lts.msi');
+
+    // URL ufficiale Node.js LTS — versione 22.x x64 stabile
+    const nodeUrl = 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi';
+
+    sendLog('Download in corso (circa 30 MB)...');
+    await run('powershell', [
+      '-nologo', '-noprofile', '-command',
+      `Invoke-WebRequest -Uri '${nodeUrl}' -OutFile '${msiPath}' -UseBasicParsing`
+    ], { ignoreError: false });
+
+    if (!fs.existsSync(msiPath)) {
+      throw new Error('Download MSI fallito');
+    }
+
+    sendLog('Installazione MSI in corso...');
+    await run('msiexec', [
+      '/i', msiPath,
+      '/quiet', '/norestart',
+      'ADDLOCAL=ALL'
+    ], { ignoreError: false });
+
+    await refreshWinPath();
+
+    // Aggiorna PATH manualmente con i percorsi standard MSI
+    const nodeStdPaths = [
+      `${process.env.ProgramFiles}\\nodejs`,
+      `${process.env['ProgramFiles(x86)']}\\nodejs`,
+    ].filter(p => p && fs.existsSync(p));
+
+    if (nodeStdPaths.length) {
+      process.env.PATH = nodeStdPaths.join(';') + ';' + (process.env.PATH || '');
+    }
+
+    v2 = await runQ('node --version');
+    if (!v2) {
+      // Prova path assoluto diretto
+      for (const p of nodeStdPaths) {
+        const exe = path.join(p, 'node.exe');
+        if (fs.existsSync(exe)) {
+          v2 = await runQ(`"${exe}" --version`);
+          if (v2) {
+            sendLog(`Node.js ${v2} installato (MSI diretto)`);
+            return;
+          }
+        }
+      }
+    } else {
+      sendLog(`Node.js ${v2} installato (MSI diretto)`);
+      return;
+    }
+  } catch (e) {
+    sendLog(`Download MSI fallito: ${e.message}`);
   }
-  sendLog(`Node.js ${v2} installato`);
+
+  throw new Error(
+    'Impossibile installare Node.js automaticamente.\n' +
+    'Scaricalo manualmente da: https://nodejs.org/\n' +
+    'Poi riesegui l\'installer.'
+  );
 }
 
 // Step 2 — Git (solo Windows, su Mac non serve più)
